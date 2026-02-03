@@ -1,0 +1,113 @@
+name: 'Docker Build and Push to GAR'
+description: 'Build and push Docker images to Google Artifact Registry with WIF'
+author: 'PersonalAndriiKo'
+
+branding:
+  icon: 'package'
+  color: 'orange'
+
+inputs:
+  workload_identity_provider:
+    description: 'Full WIF provider resource name'
+    required: true
+  service_account:
+    description: 'Service account email to impersonate'
+    required: true
+  registry:
+    description: 'GAR registry hostname (e.g., europe-west1-docker.pkg.dev)'
+    required: true
+  image_name:
+    description: 'Full image name without tag (registry/project/repo/image)'
+    required: true
+  tags:
+    description: 'Image tags (comma or newline separated)'
+    required: false
+    default: 'latest'
+  context:
+    description: 'Docker build context'
+    required: false
+    default: '.'
+  dockerfile:
+    description: 'Path to Dockerfile'
+    required: false
+    default: 'Dockerfile'
+  build_args:
+    description: 'Build arguments (key=value, newline separated)'
+    required: false
+    default: ''
+  push:
+    description: 'Push image after build'
+    required: false
+    default: 'true'
+  platforms:
+    description: 'Target platforms (e.g., linux/amd64,linux/arm64)'
+    required: false
+    default: ''
+  cache_from:
+    description: 'Cache sources (e.g., type=gha)'
+    required: false
+    default: 'type=gha'
+  cache_to:
+    description: 'Cache destinations (e.g., type=gha,mode=max)'
+    required: false
+    default: 'type=gha,mode=max'
+
+outputs:
+  image_digest:
+    description: 'Image digest (sha256:...)'
+    value: ${{ steps.build.outputs.digest }}
+  image_metadata:
+    description: 'Image metadata JSON'
+    value: ${{ steps.build.outputs.metadata }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Authenticate to GCP via WIF
+      id: auth
+      uses: google-github-actions/auth@v2.1.4
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        token_format: access_token
+
+    - name: Login to GAR
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: oauth2accesstoken
+        password: ${{ steps.auth.outputs.access_token }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Prepare tags
+      id: tags
+      shell: bash
+      run: |
+        TAGS=""
+        IFS=$'\n,' read -ra TAG_ARRAY <<< "${{ inputs.tags }}"
+        for tag in "${TAG_ARRAY[@]}"; do
+          tag=$(echo "$tag" | xargs)  # trim whitespace
+          if [ -n "$tag" ]; then
+            TAGS="${TAGS}${{ inputs.image_name }}:${tag}"$'\n'
+          fi
+        done
+        {
+          echo 'tags<<EOF'
+          echo "$TAGS"
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT
+
+    - name: Build and Push
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.tags.outputs.tags }}
+        build-args: ${{ inputs.build_args }}
+        platforms: ${{ inputs.platforms }}
+        cache-from: ${{ inputs.cache_from }}
+        cache-to: ${{ inputs.cache_to }}

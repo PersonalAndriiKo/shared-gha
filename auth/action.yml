@@ -1,0 +1,56 @@
+name: 'GCP WIF Authentication'
+description: 'Authenticate to GCP using Workload Identity Federation (keyless)'
+author: 'PersonalAndriiKo'
+
+branding:
+  icon: 'key'
+  color: 'blue'
+
+inputs:
+  workload_identity_provider:
+    description: 'Full WIF provider resource name (from terraform output wif_provider_name)'
+    required: true
+  service_account:
+    description: 'Service account email to impersonate'
+    required: true
+  token_format:
+    description: 'Token format (access_token or id_token)'
+    required: false
+    default: 'access_token'
+  access_token_lifetime:
+    description: 'Token lifetime in seconds (max 3600)'
+    required: false
+    default: '3600'
+  create_credentials_file:
+    description: 'Create credentials file for SDK usage'
+    required: false
+    default: 'true'
+  export_environment_variables:
+    description: 'Export GOOGLE_APPLICATION_CREDENTIALS and related env vars'
+    required: false
+    default: 'true'
+
+outputs:
+  access_token:
+    description: 'GCP access token (if token_format is access_token)'
+    value: ${{ steps.auth.outputs.access_token }}
+  id_token:
+    description: 'GCP ID token (if token_format is id_token)'
+    value: ${{ steps.auth.outputs.id_token }}
+  credentials_file_path:
+    description: 'Path to credentials file'
+    value: ${{ steps.auth.outputs.credentials_file_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Authenticate to GCP via WIF
+      id: auth
+      uses: google-github-actions/auth@v2.1.4
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        token_format: ${{ inputs.token_format }}
+        access_token_lifetime: ${{ inputs.access_token_lifetime }}
+        create_credentials_file: ${{ inputs.create_credentials_file }}
+        export_environment_variables: ${{ inputs.export_environment_variables }}

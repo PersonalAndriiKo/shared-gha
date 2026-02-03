@@ -1,0 +1,125 @@
+name: 'Terraform with GCP WIF'
+description: 'Run Terraform commands with WIF authentication'
+author: 'PersonalAndriiKo'
+
+branding:
+  icon: 'server'
+  color: 'purple'
+
+inputs:
+  workload_identity_provider:
+    description: 'Full WIF provider resource name'
+    required: true
+  service_account:
+    description: 'Service account email to impersonate'
+    required: true
+  terraform_version:
+    description: 'Terraform version to use'
+    required: false
+    default: '1.6.0'
+  working_directory:
+    description: 'Terraform working directory'
+    required: false
+    default: '.'
+  command:
+    description: 'Terraform command (init, plan, apply, destroy, validate, fmt)'
+    required: true
+  plan_file:
+    description: 'Plan file name for plan/apply commands'
+    required: false
+    default: 'tfplan'
+  auto_approve:
+    description: 'Auto approve apply/destroy (use with caution)'
+    required: false
+    default: 'false'
+
+outputs:
+  plan_exitcode:
+    description: 'Terraform plan exit code (0=no changes, 1=error, 2=changes)'
+    value: ${{ steps.terraform.outputs.exitcode }}
+  plan_stdout:
+    description: 'Terraform plan output'
+    value: ${{ steps.terraform.outputs.stdout }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Authenticate to GCP via WIF
+      uses: google-github-actions/auth@v2.1.4
+      with:
+        workload_identity_provider: ${{ inputs.workload_identity_provider }}
+        service_account: ${{ inputs.service_account }}
+        create_credentials_file: true
+        export_environment_variables: true
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform_version }}
+        terraform_wrapper: false
+
+    - name: Terraform Command
+      id: terraform
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        set +e
+
+        case "${{ inputs.command }}" in
+          init)
+            terraform init -no-color
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+          validate)
+            terraform validate -no-color
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+          fmt)
+            terraform fmt -check -recursive
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+          plan)
+            terraform plan -no-color -detailed-exitcode -out=${{ inputs.plan_file }} 2>&1 | tee /tmp/plan_output.txt
+            exitcode=${PIPESTATUS[0]}
+            echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+            # Multiline output
+            {
+              echo 'stdout<<EOF'
+              cat /tmp/plan_output.txt
+              echo 'EOF'
+            } >> $GITHUB_OUTPUT
+            # Exit 0 for no changes (0) or changes (2), fail only on errors (1)
+            if [ $exitcode -eq 1 ]; then exit 1; fi
+            exit 0
+            ;;
+          apply)
+            if [ "${{ inputs.auto_approve }}" = "true" ]; then
+              if [ -f "${{ inputs.plan_file }}" ]; then
+                terraform apply -no-color -auto-approve ${{ inputs.plan_file }}
+              else
+                terraform apply -no-color -auto-approve
+              fi
+            else
+              if [ -f "${{ inputs.plan_file }}" ]; then
+                terraform apply -no-color ${{ inputs.plan_file }}
+              else
+                echo "Error: Plan file not found and auto_approve is false"
+                exit 1
+              fi
+            fi
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+          destroy)
+            if [ "${{ inputs.auto_approve }}" = "true" ]; then
+              terraform destroy -no-color -auto-approve
+            else
+              echo "Error: destroy requires auto_approve=true"
+              exit 1
+            fi
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            terraform ${{ inputs.command }}
+            echo "exitcode=$?" >> $GITHUB_OUTPUT
+            ;;
+        esac
