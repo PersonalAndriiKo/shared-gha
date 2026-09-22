@@ -41,6 +41,40 @@ Build and push Docker images to Google Artifact Registry.
     tags: latest,${{ github.sha }}
 ```
 
+### `scan-image` - Container Vulnerability Scan
+
+Scan a container image with Grype and fail the build on findings that have a
+fix available.
+
+```yaml
+- uses: PersonalAndriiKo/shared-gha/scan-image@main
+  with:
+    image: europe-west1-docker.pkg.dev/PROJECT_ID/repo/image:tag
+    category: backend        # distinct per image, or uploads overwrite each other
+```
+
+Scan the image **before** pushing it — build with `load: true`, scan, then
+push — so a vulnerable image is never published.
+
+| input | default | meaning |
+| --- | --- | --- |
+| `image` | required | image to scan; must be local or pullable |
+| `grype_version` | `v0.119.0` | release tag, installed and checksum-verified |
+| `severity_threshold` | `7.0` | CVSS at or above which a finding blocks (7.0 is High) |
+| `require_fix` | `true` | only block when a fix exists |
+| `upload_sarif` | `true` | send results to code scanning |
+| `category` | `grype` | code scanning category |
+
+`require_fix: true` is the default deliberately. Base images routinely carry
+Highs with no published fix — `alpine:3.24` currently ships zlib
+CVE-2026-85091 and four wget CVEs, none fixable — so blocking on every High
+would stop every build on something nobody can resolve. That is how gates end
+up switched off. Unfixable findings are still printed and uploaded, so they
+stay visible and get picked up when a fix lands. Set `require_fix: false` for
+a stricter gate where the base image is under your control.
+
+Uploading requires `permissions: security-events: write` in the calling job.
+
 ## Prerequisites
 
 1. **Workload Identity Federation** configured in GCP

@@ -1,0 +1,162 @@
+name: 'Scan Container Image with Grype'
+description: 'Scan a container image for vulnerabilities and fail on findings that have a fix available'
+author: 'PersonalAndriiKo'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  image:
+    description: 'Image reference to scan. Must already be present locally (build with load: true) or pullable.'
+    required: true
+  grype_version:
+    description: 'Grype release tag to install'
+    required: false
+    default: 'v0.119.0'
+  severity_threshold:
+    description: 'CVSS score at or above which a finding blocks. 7.0 is High.'
+    required: false
+    default: '7.0'
+  require_fix:
+    description: >-
+      Only block when a fix is available. Base images routinely carry
+      unfixable Highs; failing on those blocks every build on something
+      nobody can resolve, which is how gates end up disabled.
+    required: false
+    default: 'true'
+  upload_sarif:
+    description: 'Upload the SARIF to code scanning. Caller needs permissions: security-events: write.'
+    required: false
+    default: 'true'
+  category:
+    description: 'Code scanning category, so multiple images in one repo do not overwrite each other'
+    required: false
+    default: 'grype'
+
+outputs:
+  sarif_file:
+    description: 'Path to the SARIF report'
+    value: ${{ steps.scan.outputs.sarif_file }}
+  findings:
+    description: 'Total number of findings'
+    value: ${{ steps.gate.outputs.findings }}
+  blocking:
+    description: 'Number of findings that met the blocking criteria'
+    value: ${{ steps.gate.outputs.blocking }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Installed from the published release archive and checked against the
+    # release checksums, rather than piping an install script from a branch.
+    - name: Install grype
+      shell: bash
+      env:
+        GRYPE_VERSION: ${{ inputs.grype_version }}
+      run: |
+        set -euo pipefail
+        ver="${GRYPE_VERSION#v}"
+        case "$(uname -m)" in
+          x86_64)          arch=amd64 ;;
+          aarch64|arm64)   arch=arm64 ;;
+          *) echo "::error::unsupported architecture $(uname -m)"; exit 1 ;;
+        esac
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        base="https://github.com/anchore/grype/releases/download/v${ver}"
+        tarball="grype_${ver}_${os}_${arch}.tar.gz"
+        dir="${RUNNER_TEMP}/grype"
+        mkdir -p "$dir"
+        curl -sSfL -o "$dir/$tarball"      "$base/$tarball"
+        curl -sSfL -o "$dir/checksums.txt" "$base/grype_${ver}_checksums.txt"
+        # sha256sum is GNU coreutils; macOS runners ship shasum instead.
+        if command -v sha256sum >/dev/null 2>&1; then
+          ( cd "$dir" && grep " ${tarball}\$" checksums.txt | sha256sum -c - )
+        else
+          ( cd "$dir" && grep " ${tarball}\$" checksums.txt | shasum -a 256 -c - )
+        fi
+        tar -xzf "$dir/$tarball" -C "$dir" grype
+        echo "$dir" >> "$GITHUB_PATH"
+        "$dir/grype" version
+
+    # One scan, two outputs: the table goes to the log so a failure is
+    # readable, and SARIF goes to a known path for the gate and the upload.
+    # No --fail-on; the gate below decides what blocks.
+    - name: Scan image
+      id: scan
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        CATEGORY: ${{ inputs.category }}
+      run: |
+        set -euo pipefail
+        sarif="${RUNNER_TEMP}/grype-${CATEGORY}.sarif"
+        grype "$IMAGE" -o table -o "sarif=${sarif}"
+        echo "sarif_file=${sarif}" >> "$GITHUB_OUTPUT"
+        echo "size: $(wc -c < "$sarif") bytes"
+
+    - name: Enforce findings
+      id: gate
+      shell: bash
+      env:
+        SARIF: ${{ steps.scan.outputs.sarif_file }}
+        THRESHOLD: ${{ inputs.severity_threshold }}
+        REQUIRE_FIX: ${{ inputs.require_fix }}
+      run: |
+        set -euo pipefail
+        if [ ! -s "$SARIF" ]; then
+          echo "::error::grype produced no usable SARIF at '$SARIF'"
+          exit 1
+        fi
+        python3 - "$SARIF" "$THRESHOLD" "$REQUIRE_FIX" <<'EOF'
+        import json, os, re, sys
+
+        path, threshold, require_fix = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "true"
+        sarif = json.load(open(path))
+
+        rows, blocking = [], []
+        for run in sarif.get("runs", []):
+            rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+            for res in run.get("results", []):
+                rule = rules.get(res.get("ruleId"), {})
+                try:
+                    sev = float(rule.get("properties", {}).get("security-severity", 0))
+                except (TypeError, ValueError):
+                    sev = 0.0
+                # grype's help text is newline separated; stopping at "|" alone
+                # runs past an empty value into the next field and makes every
+                # finding look fixable.
+                help_text = rule.get("help", {}).get("text", "") or ""
+                m = re.search(r"Fix Version:[ \t]*([^\n|]*)", help_text)
+                fix = (m.group(1).strip() if m else "")
+                row = "  %-5.1f %-44s fix=%s" % (sev, res.get("ruleId", "?"), fix or "(none available)")
+                rows.append(row)
+                if sev >= threshold and (fix or not require_fix):
+                    blocking.append(row)
+
+        print("grype findings (%d):" % len(rows))
+        for r in sorted(rows, reverse=True):
+            print(r)
+
+        out = os.environ.get("GITHUB_OUTPUT")
+        if out:
+            with open(out, "a") as fh:
+                fh.write("findings=%d\n" % len(rows))
+                fh.write("blocking=%d\n" % len(blocking))
+
+        if blocking:
+            qualifier = " with a fix available" if require_fix else ""
+            print("\nBLOCKING -- at or above %.1f%s:" % (threshold, qualifier))
+            for b in blocking:
+                print(b)
+            sys.exit(1)
+        print("\nNothing at or above %.1f that meets the blocking criteria." % threshold)
+        EOF
+
+    - name: Upload SARIF
+      if: ${{ always() && inputs.upload_sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd8f1df78169 # v3.28.0
+      continue-on-error: true  # a failed upload must not mask the scan result
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif_file }}
+        category: ${{ inputs.category }}
