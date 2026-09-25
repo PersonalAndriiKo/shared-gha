@@ -33,6 +33,22 @@ inputs:
     description: 'Code scanning category, so multiple images in one repo do not overwrite each other'
     required: false
     default: 'grype'
+  exclude_paths:
+    description: >-
+      Newline-separated substrings. A finding whose SARIF location matches any
+      of them is still reported, but does not block.
+
+      For vendored third-party trees the image cannot patch -- the Actions
+      runner ships its own node runtimes under externals/, with an npm bundle
+      that always lags published advisories. Blocking on those means the image
+      never publishes and our own fixes never ship, while nothing about them is
+      actually fixable by us.
+
+      Excluded findings are printed under their own heading and counted, so
+      this narrows the gate visibly rather than silently. Leave empty to block
+      on everything.
+    required: false
+    default: ''
 
 outputs:
   sarif_file:
@@ -102,6 +118,7 @@ runs:
         SARIF: ${{ steps.scan.outputs.sarif_file }}
         THRESHOLD: ${{ inputs.severity_threshold }}
         REQUIRE_FIX: ${{ inputs.require_fix }}
+        EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
       run: |
         set -euo pipefail
         if [ ! -s "$SARIF" ]; then
@@ -114,7 +131,19 @@ runs:
         path, threshold, require_fix = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "true"
         sarif = json.load(open(path))
 
-        rows, blocking = [], []
+        excludes = [p.strip() for p in os.environ.get("EXCLUDE_PATHS", "").splitlines() if p.strip()]
+
+        def locations(res):
+            out = []
+            for loc in res.get("locations", []) or []:
+                uri = (loc.get("physicalLocation", {})
+                          .get("artifactLocation", {})
+                          .get("uri"))
+                if uri:
+                    out.append(uri)
+            return out
+
+        rows, blocking, excluded = [], [], []
         for run in sarif.get("runs", []):
             rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
             for res in run.get("results", []):
@@ -131,18 +160,36 @@ runs:
                 fix = (m.group(1).strip() if m else "")
                 row = "  %-5.1f %-44s fix=%s" % (sev, res.get("ruleId", "?"), fix or "(none available)")
                 rows.append(row)
+
                 if sev >= threshold and (fix or not require_fix):
-                    blocking.append(row)
+                    where = locations(res)
+                    hit = next((e for e in excludes
+                                if any(e in uri for uri in where)), None)
+                    if hit:
+                        excluded.append("%s  [matched %r]" % (row, hit))
+                    else:
+                        blocking.append(row)
 
         print("grype findings (%d):" % len(rows))
         for r in sorted(rows, reverse=True):
             print(r)
+
+        # Printed loudly and always: an exclusion that is invisible is just a
+        # disabled check wearing a disguise.
+        if excludes:
+            print("\nexclude_paths in effect: %s" % ", ".join(repr(e) for e in excludes))
+        if excluded:
+            print("\nEXCLUDED -- would have blocked, but matched exclude_paths (%d):"
+                  % len(excluded))
+            for r in sorted(excluded, reverse=True):
+                print(r)
 
         out = os.environ.get("GITHUB_OUTPUT")
         if out:
             with open(out, "a") as fh:
                 fh.write("findings=%d\n" % len(rows))
                 fh.write("blocking=%d\n" % len(blocking))
+                fh.write("excluded=%d\n" % len(excluded))
 
         if blocking:
             qualifier = " with a fix available" if require_fix else ""
