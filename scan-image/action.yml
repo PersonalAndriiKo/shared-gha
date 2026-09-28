@@ -168,7 +168,18 @@ runs:
                     if hit:
                         excluded.append("%s  [matched %r]" % (row, hit))
                     else:
-                        blocking.append(row)
+                        # Report WHERE, not just what. A blocking row naming only
+                        # a CVE and a package leaves you guessing which binary in
+                        # the image carries it, and in a runner image the same Go
+                        # advisory routinely appears once per vendored tool. The
+                        # path is what tells you whether to bump something, drop
+                        # it, or rebuild it.
+                        if where:
+                            first = where[0]
+                            more = "" if len(where) == 1 else " (+%d more)" % (len(where) - 1)
+                            blocking.append("%s  %s%s" % (row, first, more))
+                        else:
+                            blocking.append("%s  (no path reported)" % row)
 
         print("grype findings (%d):" % len(rows))
         for r in sorted(rows, reverse=True):
