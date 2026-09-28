@@ -3,8 +3,30 @@
 
 version: 2
 updates:
+  # This repo has no .github/workflows/ and no action.yml at the root -- it is
+  # a library of composite actions, each in its own subdirectory. The
+  # github-actions ecosystem only looks for `<dir>/action.yml` or
+  # `<dir>/.github/workflows/*.yml`, so the previous `directory: "/"` matched
+  # nothing and Dependabot aborted before reading a single dependency:
+  #
+  #   ERROR Error during file fetching; aborting:
+  #         /action.yml or /.github/workflows/<anything>.yml not found
+  #   dependency_file_not_found
+  #
+  # It had failed that way on every scheduled run since at least 2026-09-18,
+  # which meant the actions pinned inside these composite actions were the one
+  # set in the org nothing was watching -- while every other repo consumes them
+  # via `uses: PersonalAndriiKo/shared-gha/<action>@main`.
+  #
+  # Each composite action is therefore listed explicitly. If a new one is added,
+  # add its directory here too; and if a real workflow is ever added under
+  # .github/workflows/, add "/" back alongside these.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/auth"
+      - "/docker-push"
+      - "/scan-image"
+      - "/terraform"
     schedule:
       interval: "weekly"
       day: "monday"
