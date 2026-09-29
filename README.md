@@ -1,45 +1,17 @@
-# Shared GitHub Actions for GCP WIF Authentication
+# Shared GitHub Actions
 
-Reusable GitHub Actions for Workload Identity Federation (WIF) authentication to Google Cloud Platform.
+Reusable composite actions for this org's CI.
+
+> **2026-09-29:** the `auth`, `terraform` and `docker-push` actions were
+> removed. Nothing referenced them — an org-wide code search found consumers
+> only for `scan-image` — and they had drifted years behind the versions the
+> repos actually use, so they were a maintenance liability that looked like a
+> supported path. They remain in git history if one is ever needed again.
+>
+> For GCP auth, call `google-github-actions/auth` directly, as every workflow
+> in the org already does.
 
 ## Actions
-
-### `auth` - GCP WIF Authentication
-
-Authenticate to GCP using OIDC tokens (keyless authentication).
-
-```yaml
-- uses: PersonalAndriiKo/shared-gha/auth@main
-  with:
-    workload_identity_provider: 'projects/PROJECT_ID/locations/global/workloadIdentityPools/github-actions/providers/github-oidc'
-    service_account: 'my-sa@PROJECT_ID.iam.gserviceaccount.com'
-```
-
-### `terraform` - Terraform with WIF
-
-Run Terraform commands with automatic WIF authentication.
-
-```yaml
-- uses: PersonalAndriiKo/shared-gha/terraform@main
-  with:
-    workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-    service_account: ${{ vars.TF_SERVICE_ACCOUNT }}
-    command: plan
-```
-
-### `docker-push` - Docker Build and Push to GAR
-
-Build and push Docker images to Google Artifact Registry.
-
-```yaml
-- uses: PersonalAndriiKo/shared-gha/docker-push@main
-  with:
-    workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-    service_account: ${{ vars.DOCKER_SERVICE_ACCOUNT }}
-    registry: europe-west1-docker.pkg.dev
-    image_name: europe-west1-docker.pkg.dev/PROJECT_ID/repo/image
-    tags: latest,${{ github.sha }}
-```
 
 ### `scan-image` - Container Vulnerability Scan
 

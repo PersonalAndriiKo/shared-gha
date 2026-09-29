@@ -4,10 +4,15 @@ This document defines the patterns and workflows for working with the shared-gha
 
 ## Repository Purpose
 
-Shared GitHub Actions for GCP WIF authentication:
-- **auth**: GCP WIF authentication (keyless)
-- **terraform**: Terraform with WIF
-- **docker-push**: Docker build and push to GAR
+Shared composite actions for this org's CI:
+- **scan-image**: container vulnerability scan (Grype) that gates the build
+
+`auth`, `terraform` and `docker-push` were removed on 2026-09-29. An org-wide
+code search found no workflow referencing any of them, while they had drifted
+years behind the action versions the repos actually use -- a maintenance
+liability that read as a supported path. They are in git history if needed.
+Call `google-github-actions/auth` directly for GCP auth, as every workflow in
+the org already does.
 
 ## Before Any Change
 
@@ -19,9 +24,7 @@ Shared GitHub Actions for GCP WIF authentication:
    ```
 
 2. **Audit** to find the correct location
-   - Auth action: `auth/`
-   - Terraform action: `terraform/`
-   - Docker push action: `docker-push/`
+   - Image scan action: `scan-image/`
 
 3. **Summary** before changing
    - State the root cause
@@ -34,43 +37,27 @@ Shared GitHub Actions for GCP WIF authentication:
 
 ```
 shared-gha/
-├── auth/                      # GCP WIF authentication action
-│   └── action.yml
-├── terraform/                 # Terraform with WIF action
-│   └── action.yml
-├── docker-push/               # Docker build & push action
+├── scan-image/                # Grype scan + build gate
 │   └── action.yml
 └── README.md
 ```
 
 ## Available Actions
 
-### auth - GCP WIF Authentication
+### scan-image - Container Vulnerability Scan
 ```yaml
-- uses: PersonalAndriiKo/shared-gha/auth@main
+- uses: PersonalAndriiKo/shared-gha/scan-image@main
   with:
-    workload_identity_provider: 'projects/PROJECT_ID/locations/global/workloadIdentityPools/github-actions/providers/github-oidc'
-    service_account: 'my-sa@PROJECT_ID.iam.gserviceaccount.com'
+    image: europe-west1-docker.pkg.dev/PROJECT_ID/repo/image:tag
+    category: backend        # distinct per image, or uploads overwrite each other
 ```
 
-### terraform - Terraform with WIF
-```yaml
-- uses: PersonalAndriiKo/shared-gha/terraform@main
-  with:
-    workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-    service_account: ${{ vars.TF_SERVICE_ACCOUNT }}
-    command: plan
-```
+Consumed by l1-gh-runners, threat-detector and deya-monitoring. It is referenced
+as `@main`, so a change here reaches all of them on their next run -- there is
+no pinning and no staging. Check consumers before changing behaviour:
 
-### docker-push - Docker Build and Push to GAR
-```yaml
-- uses: PersonalAndriiKo/shared-gha/docker-push@main
-  with:
-    workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-    service_account: ${{ vars.DOCKER_SERVICE_ACCOUNT }}
-    registry: europe-west1-docker.pkg.dev
-    image_name: europe-west1-docker.pkg.dev/PROJECT_ID/repo/image
-    tags: latest,${{ github.sha }}
+```bash
+gh api -X GET /search/code -f q='shared-gha org:PersonalAndriiKo'
 ```
 
 ## Required Permissions
